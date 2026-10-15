@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ConnectServerProfile,
   DirectServerProfile,
+  SshServerProfile,
 } from "../profiles/profile";
 import type { AppStateLike, AppStateStatusLike } from "../realtime/app-state";
 import {
@@ -62,7 +63,18 @@ function fakeAppState(): AppStateLike & {
   };
 }
 
+import type {
+  SshHostKeyEvent,
+  SshOpenOptions,
+  SshTransport,
+} from "../ssh/transport";
+
 interface SetupOptions {
+  sshTransport?: SshTransport;
+  onHostKeyTrusted?: (
+    profile: SshServerProfile,
+    hostKey: string,
+  ) => Promise<void>;
   fallbackResponse?: () => Response;
   onSocket?: (socket: FakeSocket) => void;
   stored?: StoredSession;
@@ -92,6 +104,8 @@ function setup(options: SetupOptions = {}) {
   const fetchSession = vi.fn<() => Promise<DesktopSession>>();
   const schedulers: ReturnType<typeof createSessionScheduler>[] = [];
   const connector = createActiveProfileConnector({
+    sshTransport: options.sshTransport,
+    onHostKeyTrusted: options.onHostKeyTrusted,
     registry,
     appState,
     createSessionScheduler: () => {
@@ -569,5 +583,122 @@ describe("createActiveProfileConnector", () => {
     expect(sockets.sockets).toHaveLength(1);
     expect(connector.getSnapshot()?.profile.id).toBe(direct.id);
     expect(connector.getSnapshot()?.session).toEqual({ status: "idle" });
+  });
+});
+
+const sshProfile: SshServerProfile = {
+  id: "ssh",
+  mode: "ssh",
+  label: "SSH",
+  createdAt: 0,
+  serverUrl: "ssh://host:22",
+  hostname: "host",
+  port: 22,
+  username: "user",
+  keyRef: "key",
+  hostKey: null,
+  localHost: "127.64.0.1",
+  remoteHost: "127.0.0.1",
+  remotePort: 38886,
+};
+
+function sshTransportFixture() {
+  let resolveOpen: (result: {
+    tunnelId: string;
+    serverUrl: string;
+  }) => void = () => {};
+  let emitHostKey: (event: SshHostKeyEvent) => void = () => {};
+  let attemptId = "";
+  const transport: SshTransport = {
+    open: vi.fn((options: SshOpenOptions) => {
+      attemptId = options.attemptId;
+      return new Promise<{ tunnelId: string; serverUrl: string }>((resolve) => {
+        resolveOpen = resolve;
+      });
+    }),
+    cancel: vi.fn(async () => {}),
+    close: vi.fn(async () => {}),
+    confirmHostKey: vi.fn(async () => {}),
+    onState: () => () => {},
+    onClosed: () => () => {},
+    onHostKey(listener) {
+      emitHostKey = listener;
+      return () => {};
+    },
+  };
+  return {
+    transport,
+    resolve: () =>
+      resolveOpen({ tunnelId: "tunnel", serverUrl: "http://127.64.0.1:38886" }),
+    hostKey: () =>
+      emitHostKey({
+        attemptId,
+        hostKey: "trusted",
+        fingerprint: "SHA256:key",
+        changed: false,
+      }),
+  };
+}
+
+describe("SSH active profile integration", () => {
+  it("retains the SSH profile and uses only the effective HTTP URL, then closes on direct switch", async () => {
+    const ssh = sshTransportFixture();
+    const s = setup({ sshTransport: ssh.transport });
+    s.connector.activate(sshProfile);
+    expect(s.connector.getSnapshot()).toBeNull();
+    s.connector.provideSshPassphrase("");
+    ssh.resolve();
+    await flush();
+    expect(s.connector.getSnapshot()?.profile).toBe(sshProfile);
+    expect(s.connector.getSnapshot()?.client.serverUrl).toBe(
+      "http://127.64.0.1:38886",
+    );
+    s.connector.activate(direct);
+    expect(ssh.transport.close).toHaveBeenCalledWith({ tunnelId: "tunnel" });
+    expect(s.connector.getSnapshot()?.profile).toBe(direct);
+    expect(s.connector.getSshState()).toBeNull();
+    s.connector.activate(null);
+    s.registry.disposeAll();
+  });
+
+  it("waits for host-key persistence and accepts its profile update without restarting", async () => {
+    const ssh = sshTransportFixture();
+    let persist: () => void = () => {};
+    const s = setup({
+      sshTransport: ssh.transport,
+      onHostKeyTrusted: async (profile) => {
+        s.connector.activate(profile);
+        await new Promise<void>((resolve) => {
+          persist = resolve;
+        });
+      },
+    });
+    s.connector.activate(sshProfile);
+    s.connector.provideSshPassphrase("");
+    ssh.hostKey();
+    s.connector.confirmSshHostKey(true);
+    await flush();
+    expect(ssh.transport.open).toHaveBeenCalledTimes(1);
+    expect(ssh.transport.confirmHostKey).not.toHaveBeenCalled();
+    ssh.resolve();
+    await flush();
+    expect(s.connector.getSnapshot()).toBeNull();
+    persist();
+    await flush();
+    expect(ssh.transport.confirmHostKey).toHaveBeenCalledTimes(1);
+    expect(s.connector.getSnapshot()?.profile.mode).toBe("ssh");
+    expect(s.connector.getSnapshot()?.profile).toMatchObject({
+      hostKey: "trusted",
+    });
+    s.connector.activate(null);
+    s.registry.disposeAll();
+  });
+
+  it("returns a stable unavailable snapshot", () => {
+    const s = setup();
+    s.connector.activate(sshProfile);
+    expect(s.connector.getSshState()).toBe(s.connector.getSshState());
+    s.connector.activate(null);
+    s.registry.disposeAll();
   });
 });

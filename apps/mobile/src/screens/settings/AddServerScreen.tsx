@@ -7,6 +7,8 @@ import {
   probeServer,
   validateDirectServerUrl,
 } from "@/lib/profiles";
+import { isSshAvailable } from "@/lib/native/ssh";
+import { SshServerForm } from "./SshServerForm";
 import { describeError } from "@/lib/describe-error";
 import { Button, GroupedRow, Input, Text, toast } from "@/ui";
 import { connectEnrollHref, rawPathHref } from "../shell/hrefs";
@@ -36,6 +38,9 @@ export function AddServerScreen() {
   const params = useLocalSearchParams<{ serverUrl?: string; next?: string }>();
   const colors = useBadgeColors();
   const { profiles, addProfile, setActiveProfile } = useProfiles();
+  const [sshBusy, setSshBusy] = useState(false);
+  const [mode, setMode] = useState<"direct" | "ssh">("direct");
+  const sshAvailable = process.env.EXPO_OS === "android" && isSshAvailable();
   const [url, setUrl] = useState(params.serverUrl ?? "");
   const [label, setLabel] = useState("");
   const [urlTouched, setUrlTouched] = useState(false);
@@ -45,7 +50,8 @@ export function AddServerScreen() {
   const validation = validateDirectServerUrl(url);
   const showUrlError = urlTouched && !validation.ok && url.trim().length > 0;
   const insecure = validation.ok && validation.warning === "insecure-http";
-  const busy = submit.phase === "probing" || submit.phase === "saving";
+  const busy =
+    sshBusy || submit.phase === "probing" || submit.phase === "saving";
   const firstRun = profiles.length === 0;
 
   const onSubmit = async () => {
@@ -107,102 +113,127 @@ export function AddServerScreen() {
         </SettingsSection>
 
         <SettingsSection
-          title="Server URL"
           footnote={
-            showUrlError ? (
-              <Text
-                variant="footnote"
-                tone="destructive"
-                testID="server-url-error"
-              >
-                {validation.message}
-              </Text>
-            ) : insecure ? (
-              <Text
-                variant="footnote"
-                tone="warning"
-                testID="server-url-warning"
-              >
-                Plain http is unencrypted: anyone on this network can read your
-                threads. Prefer https (Tailscale Serve) outside a trusted LAN.
-              </Text>
-            ) : (
-              URL_HELP
-            )
+            sshAvailable
+              ? "Forward a private bb server through SSH."
+              : "SSH connections require an Android build with SSH support."
           }
         >
-          <View className="px-1">
-            <Input
-              value={url}
-              onChangeText={(next) => {
-                setUrl(next);
-                if (submit.phase === "failed") setSubmit({ phase: "idle" });
-              }}
-              onBlur={() => setUrlTouched(true)}
-              placeholder="https://bb.example.ts.net"
-              keyboardType="url"
-              textContentType="URL"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus
-              returnKeyType="next"
-              submitBehavior="submit"
-              onSubmitEditing={() => labelRef.current?.focus()}
-              invalid={showUrlError}
-              mono
-              grouped
-              editable={!busy}
-              testID="server-url-input"
-            />
-          </View>
-          <View className="px-1">
-            <Input
-              ref={labelRef}
-              value={label}
-              onChangeText={setLabel}
-              placeholder={
-                validation.ok
-                  ? `Label (${defaultLabel(validation.serverUrl)})`
-                  : "Label (optional)"
-              }
-              maxLength={PROFILE_LABEL_MAX_LENGTH}
-              autoCapitalize="words"
-              returnKeyType="go"
-              onSubmitEditing={() => void onSubmit()}
-              grouped
-              editable={!busy}
-              testID="server-label-input"
-            />
-          </View>
+          <GroupedRow
+            title={
+              mode === "ssh" ? "Use a direct server URL" : "Connect through SSH"
+            }
+            leading="Laptop"
+            trailing="chevron"
+            onPress={() => setMode(mode === "ssh" ? "direct" : "ssh")}
+            disabled={busy || !sshAvailable}
+            testID="add-server-ssh"
+          />
         </SettingsSection>
-
-        <View className="gap-2">
-          <Button
-            onPress={() => void onSubmit()}
-            loading={busy}
-            disabled={url.trim().length === 0}
-            icon="ArrowRight"
-            iconPosition="right"
-            testID="add-server-submit"
-          >
-            {submit.phase === "probing"
-              ? "Checking server…"
-              : submit.phase === "saving"
-                ? "Saving…"
-                : "Connect"}
-          </Button>
-          {submit.phase === "failed" ? (
-            <Text
-              variant="footnote"
-              tone="destructive"
-              className="px-4"
-              selectable
-              testID="add-server-error"
+        {mode === "ssh" ? (
+          <SshServerForm next={params.next} onBusyChange={setSshBusy} />
+        ) : (
+          <>
+            <SettingsSection
+              title="Server URL"
+              footnote={
+                showUrlError ? (
+                  <Text
+                    variant="footnote"
+                    tone="destructive"
+                    testID="server-url-error"
+                  >
+                    {validation.message}
+                  </Text>
+                ) : insecure ? (
+                  <Text
+                    variant="footnote"
+                    tone="warning"
+                    testID="server-url-warning"
+                  >
+                    Plain http is unencrypted: anyone on this network can read
+                    your threads. Prefer https (Tailscale Serve) outside a
+                    trusted LAN.
+                  </Text>
+                ) : (
+                  URL_HELP
+                )
+              }
             >
-              {submit.message}
-            </Text>
-          ) : null}
-        </View>
+              <View className="px-1">
+                <Input
+                  value={url}
+                  onChangeText={(next) => {
+                    setUrl(next);
+                    if (submit.phase === "failed") setSubmit({ phase: "idle" });
+                  }}
+                  onBlur={() => setUrlTouched(true)}
+                  placeholder="https://bb.example.ts.net"
+                  keyboardType="url"
+                  textContentType="URL"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                  returnKeyType="next"
+                  submitBehavior="submit"
+                  onSubmitEditing={() => labelRef.current?.focus()}
+                  invalid={showUrlError}
+                  mono
+                  grouped
+                  editable={!busy}
+                  testID="server-url-input"
+                />
+              </View>
+              <View className="px-1">
+                <Input
+                  ref={labelRef}
+                  value={label}
+                  onChangeText={setLabel}
+                  placeholder={
+                    validation.ok
+                      ? `Label (${defaultLabel(validation.serverUrl)})`
+                      : "Label (optional)"
+                  }
+                  maxLength={PROFILE_LABEL_MAX_LENGTH}
+                  autoCapitalize="words"
+                  returnKeyType="go"
+                  onSubmitEditing={() => void onSubmit()}
+                  grouped
+                  editable={!busy}
+                  testID="server-label-input"
+                />
+              </View>
+            </SettingsSection>
+
+            <View className="gap-2">
+              <Button
+                onPress={() => void onSubmit()}
+                loading={busy}
+                disabled={url.trim().length === 0}
+                icon="ArrowRight"
+                iconPosition="right"
+                testID="add-server-submit"
+              >
+                {submit.phase === "probing"
+                  ? "Checking server…"
+                  : submit.phase === "saving"
+                    ? "Saving…"
+                    : "Connect"}
+              </Button>
+              {submit.phase === "failed" ? (
+                <Text
+                  variant="footnote"
+                  tone="destructive"
+                  className="px-4"
+                  selectable
+                  testID="add-server-error"
+                >
+                  {submit.message}
+                </Text>
+              ) : null}
+            </View>
+          </>
+        )}
       </GroupedScreen>
     </>
   );

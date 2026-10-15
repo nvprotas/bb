@@ -1,4 +1,6 @@
 import type { ServerProfile } from "../profiles/profile";
+import { createSshConnectionController } from "../ssh/connection-controller";
+import type { SshConnectionState, SshTransport } from "../ssh/transport";
 import { refetchQueriesRejectedBeforeSession } from "../query/session-invalidation";
 import type { AppStateLike } from "../realtime/app-state";
 import type {
@@ -22,13 +24,27 @@ export interface ActiveProfileConnector {
   activate(profile: ServerProfile | null): void;
   getSnapshot(): ActiveProfileConnection | null;
   subscribe(listener: () => void): () => void;
+  getSshState(): SshConnectionState | null;
+  confirmSshHostKey(accept: boolean): void;
+  provideSshPassphrase(value: string): void;
+  retrySsh(): void;
 }
 
 export interface CreateActiveProfileConnectorDeps {
   registry: ProfileClientRegistry;
   appState: AppStateLike;
   createSessionScheduler: () => SessionScheduler;
+  sshTransport?: SshTransport;
+  onHostKeyTrusted?: (
+    profile: Extract<ServerProfile, { mode: "ssh" }>,
+    hostKey: string,
+  ) => void | Promise<void>;
 }
+
+const SSH_UNAVAILABLE_STATE: SshConnectionState = {
+  status: "error",
+  detail: "SSH is unavailable on this device",
+};
 
 const IDLE_SESSION: SessionState = { status: "idle" };
 
@@ -42,6 +58,17 @@ const AUTH_FAILURE_BREAKER_DETAIL =
   "The session was minted but the server keeps rejecting it; check the device clock or pair again";
 
 function connectionIdentity(profile: ServerProfile): string {
+  if (profile.mode === "ssh")
+    return JSON.stringify([
+      profile.id,
+      profile.hostname,
+      profile.port,
+      profile.username,
+      profile.keyRef,
+      profile.localHost,
+      profile.remoteHost,
+      profile.remotePort,
+    ]);
   return profile.mode === "connect"
     ? `${profile.id}\0${profile.serverUrl}\0${profile.credential}`
     : `${profile.id}\0${profile.serverUrl}`;
@@ -54,6 +81,32 @@ export function createActiveProfileConnector(
   let snapshot: ActiveProfileConnection | null = null;
   let identity: string | null = null;
   let teardown: (() => void) | null = null;
+  let activeSshProfile: Extract<ServerProfile, { mode: "ssh" }> | null = null;
+  let sshDisconnect: (() => void) | null = null;
+  let sshUnavailable = false;
+  const ssh = deps.sshTransport
+    ? createSshConnectionController({
+        transport: deps.sshTransport,
+        appState: deps.appState,
+        onHostKeyTrusted: deps.onHostKeyTrusted,
+      })
+    : null;
+  ssh?.subscribe(() => {
+    sshDisconnect?.();
+    sshDisconnect = null;
+    const state = ssh.getState();
+    if (state?.status === "ready" && activeSshProfile) {
+      const client = deps.registry.getClientForProfile({
+        id: activeSshProfile.id,
+        serverUrl: state.serverUrl,
+      });
+      sshDisconnect = connectProfileClient(client, deps.appState);
+      setSnapshot({ profile: activeSshProfile, client, session: IDLE_SESSION });
+    } else {
+      if (activeSshProfile) deps.registry.disposeClient(activeSshProfile.id);
+      setSnapshot(null);
+    }
+  });
 
   function setSnapshot(next: ActiveProfileConnection | null): void {
     snapshot = next;
@@ -65,6 +118,13 @@ export function createActiveProfileConnector(
     teardown = null;
     identity = null;
     current?.();
+    if (activeSshProfile) {
+      const previous = activeSshProfile;
+      activeSshProfile = null;
+      ssh?.activate(null);
+      deps.registry.disposeClient(previous.id);
+    }
+    sshUnavailable = false;
   }
 
   function activateDirect(profile: ServerProfile, client: ProfileClient): void {
@@ -220,12 +280,27 @@ export function createActiveProfileConnector(
         return;
       }
       const nextIdentity = connectionIdentity(profile);
-      if (identity === nextIdentity && snapshot) {
-        if (snapshot.profile !== profile) setSnapshot({ ...snapshot, profile });
+      if (identity === nextIdentity && (snapshot || activeSshProfile)) {
+        if (profile.mode === "ssh") {
+          activeSshProfile = profile;
+          ssh?.updateProfile(profile);
+        }
+        if (snapshot && snapshot.profile !== profile)
+          setSnapshot({ ...snapshot, profile });
         return;
       }
       teardownCurrent();
       identity = nextIdentity;
+      if (profile.mode === "ssh") {
+        activeSshProfile = profile;
+        setSnapshot(null);
+        if (ssh) ssh.activate(profile);
+        else {
+          sshUnavailable = true;
+          setSnapshot(null);
+        }
+        return;
+      }
       const client = deps.registry.getClientForProfile(profile);
       if (profile.mode === "connect") {
         activateConnect(profile, client);
@@ -234,6 +309,11 @@ export function createActiveProfileConnector(
       }
     },
     getSnapshot: () => snapshot,
+    getSshState: () =>
+      sshUnavailable ? SSH_UNAVAILABLE_STATE : (ssh?.getState() ?? null),
+    confirmSshHostKey: (accept) => ssh?.confirmHostKey(accept),
+    provideSshPassphrase: (value) => ssh?.providePassphrase(value),
+    retrySsh: () => ssh?.retry(),
     subscribe(listener) {
       listeners.add(listener);
       return () => {

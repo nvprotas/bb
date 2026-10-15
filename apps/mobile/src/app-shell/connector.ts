@@ -7,6 +7,8 @@ import {
   nativeCookieStore,
   nativeSessionCache,
 } from "@/lib/native";
+import { createNativeSshTransport } from "@/lib/native/ssh";
+import { getProfileStore } from "@/lib/native";
 import { getAppProfileClientRegistry } from "./client-registry";
 import { createSessionScheduler } from "@/lib/session";
 
@@ -17,6 +19,10 @@ export function getActiveProfileConnector(): ActiveProfileConnector {
     instance = createActiveProfileConnector({
       registry: getAppProfileClientRegistry(),
       appState: nativeAppState,
+      sshTransport: createNativeSshTransport(),
+      onHostKeyTrusted: async (profile, hostKey) => {
+        await getProfileStore().updateProfile(profile.id, { hostKey });
+      },
       createSessionScheduler: () =>
         createSessionScheduler({
           cookieStore: nativeCookieStore,
@@ -28,7 +34,10 @@ export function getActiveProfileConnector(): ActiveProfileConnector {
 }
 
 export function waitForActiveConnection(profileId: string): Promise<boolean> {
-  const timeoutMs = 5_000;
+  const profile = getProfileStore()
+    .listProfiles()
+    .find((saved) => saved.id === profileId);
+  const timeoutMs = profile?.mode === "ssh" ? 120_000 : 5_000;
   const connector = getActiveProfileConnector();
   if (connector.getSnapshot()?.profile.id === profileId) {
     return Promise.resolve(true);
@@ -44,6 +53,7 @@ export function waitForActiveConnection(profileId: string): Promise<boolean> {
     };
     const unsubscribe = connector.subscribe(() => {
       if (connector.getSnapshot()?.profile.id === profileId) finish(true);
+      if (connector.getSshState()?.status === "error") finish(false);
     });
     const timer = setTimeout(() => finish(false), timeoutMs);
   });

@@ -84,6 +84,7 @@ interface PushNotificationData {
   kind: PushNotificationKind;
   projectId: string;
   serverUrl?: string;
+  subscriptionId: string;
   threadId: string;
 }
 
@@ -380,6 +381,7 @@ export function createPushSender(args: CreatePushSenderArgs): PushSender {
         body,
         data: {
           kind: resolved.kind,
+          subscriptionId: subscription.id,
           projectId: thread.projectId,
           ...(serverUrl === null ? {} : { serverUrl }),
           threadId: thread.id,

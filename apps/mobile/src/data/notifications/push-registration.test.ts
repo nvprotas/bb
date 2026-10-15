@@ -491,3 +491,33 @@ describe("shouldOfferPushPrompt", () => {
     ).toBe(false);
   });
 });
+
+describe("SSH push registration", () => {
+  it("registers using the active tunnel and preserves registrations while disconnected", async () => {
+    const { deps, api, store } = setup();
+    const ssh = {
+      id: "ssh-1",
+      mode: "ssh",
+      serverUrl: "http://127.64.0.1:43821",
+    } as const;
+    store.setEnabled(ssh.id, true);
+    expect(await syncPushRegistration(deps, ssh)).toMatchObject({
+      action: "registered",
+    });
+    expect(api.register).toHaveBeenCalledWith(
+      ssh.serverUrl,
+      expect.any(Object),
+    );
+    const registration = store.getRegistration(ssh.id);
+    api.register.mockClear();
+    expect(
+      await syncPushRegistration(deps, {
+        ...ssh,
+        serverUrl: "ssh://my-host:22",
+      }),
+    ).toEqual({ action: "skipped", reason: "ssh-disconnected" });
+    expect(api.register).not.toHaveBeenCalled();
+    expect(api.unregister).not.toHaveBeenCalled();
+    expect(store.getRegistration(ssh.id)).toEqual(registration);
+  });
+});

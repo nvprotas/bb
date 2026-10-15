@@ -20,6 +20,7 @@ export interface PushNotificationsModule {
 }
 
 export type PushSkipReason =
+  | "ssh-disconnected"
   | "disabled"
   | "insecure-http"
   | "no-project-id"
@@ -49,7 +50,7 @@ export interface PushSyncDeps {
 export interface PushSyncProfile {
   id: string;
   serverUrl: string;
-  mode: "direct" | "connect";
+  mode: "direct" | "connect" | "ssh";
 }
 
 export const PUSH_REGISTRATION_REFRESH_MS = 24 * 60 * 60 * 1000;
@@ -58,6 +59,14 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 export function isPushRegistrationAllowed(profile: PushSyncProfile): boolean {
   if (profile.mode === "connect") return true;
+  if (profile.mode === "ssh") {
+    try {
+      const url = new URL(profile.serverUrl);
+      return url.protocol === "http:" && /^127\./.test(url.hostname);
+    } catch {
+      return false;
+    }
+  }
   try {
     const url = new URL(profile.serverUrl);
     return url.protocol !== "http:" || LOOPBACK_HOSTS.has(url.hostname);
@@ -120,6 +129,9 @@ export async function syncPushRegistration(
   const refreshAfterMs = deps.refreshAfterMs ?? PUSH_REGISTRATION_REFRESH_MS;
   const { notifications, api, store } = deps;
   const existing = store.getRegistration(profile.id);
+  if (profile.mode === "ssh" && !isPushRegistrationAllowed(profile)) {
+    return { action: "skipped", reason: "ssh-disconnected" };
+  }
   if (!isPushRegistrationAllowed(profile)) {
     if (existing) return unregisterPushRegistration(deps, profile.id);
     return { action: "skipped", reason: "insecure-http" };
@@ -236,7 +248,9 @@ export function describePushStatus(input: {
   lastOutcome: PushSyncOutcome | null;
 }): string {
   if (!isPushRegistrationAllowed(input.profile)) {
-    return "Push needs HTTPS or bb connect";
+    return input.profile.mode === "ssh"
+      ? "Connect to this SSH server to change push notifications"
+      : "Push needs HTTPS or bb connect";
   }
   if (input.projectId === null) {
     return "Push unavailable until the app is built with EAS";

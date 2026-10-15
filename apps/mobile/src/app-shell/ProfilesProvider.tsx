@@ -11,6 +11,8 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import type { SshConnectionState } from "@/lib/ssh/transport";
+import { deleteSshKey } from "@/lib/native/ssh";
 import type { ActiveProfileConnection } from "@/lib/connection";
 import { getProfileStore, nativeAppState } from "@/lib/native";
 import {
@@ -31,6 +33,7 @@ export interface ProfilesContextValue {
   profiles: readonly ServerProfile[];
   activeProfile: ServerProfile | null;
   connection: ActiveProfileConnection | null;
+  sshState: SshConnectionState | null;
   addProfile(input: NewServerProfile): Promise<ServerProfile>;
   updateProfile(id: string, patch: ServerProfilePatch): Promise<ServerProfile>;
   removeProfile(id: string): Promise<void>;
@@ -53,6 +56,12 @@ export function ProfilesProvider({ children }: { children: ReactNode }) {
     connector.subscribe,
     connector.getSnapshot,
     connector.getSnapshot,
+  );
+
+  const sshState = useSyncExternalStore(
+    connector.subscribe,
+    connector.getSshState,
+    connector.getSshState,
   );
 
   const activeProfile = useMemo(
@@ -79,15 +88,30 @@ export function ProfilesProvider({ children }: { children: ReactNode }) {
       profiles: storeState.profiles,
       activeProfile,
       connection,
+      sshState,
       addProfile: (input) => store.addProfile(input),
       updateProfile: (id, patch) => store.updateProfile(id, patch),
       async removeProfile(id) {
+        const removed = store
+          .listProfiles()
+          .find((profile) => profile.id === id);
         await store.removeProfile(id);
+        if (
+          removed?.mode === "ssh" &&
+          !store
+            .listProfiles()
+            .some(
+              (profile) =>
+                profile.mode === "ssh" && profile.keyRef === removed.keyRef,
+            )
+        ) {
+          await deleteSshKey(removed.keyRef);
+        }
         getAppProfileClientRegistry().disposeClient(id);
       },
       setActiveProfile: (id) => store.setActiveProfile(id),
     }),
-    [store, storeState, activeProfile, connection],
+    [store, storeState, activeProfile, connection, sshState],
   );
 
   return (

@@ -1,0 +1,4 @@
+{
+  "platforms": ["android"],
+  "android": { "modules": ["app.bb.ssh.BbSshModule"] }
+}

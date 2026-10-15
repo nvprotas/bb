@@ -11,6 +11,7 @@ export {
   type PushNotificationsModule,
   type PushPermissionState,
   type PushSyncOutcome,
+  type PushSyncProfile,
 } from "./push-registration";
 export {
   createPushStore,

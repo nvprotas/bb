@@ -124,3 +124,81 @@ describe("resolvePushTargetProfile", () => {
     ).toBeNull();
   });
 });
+
+describe("SSH push targets", () => {
+  it("refuses duplicate subscription IDs and ignores absent registration IDs", async () => {
+    const hasThread = vi.fn(async () => true);
+    const target = {
+      threadId: "thr_1",
+      projectId: null,
+      serverUrl: null,
+      subscriptionId: "duplicate",
+    };
+    const profiles = [
+      { id: "first", serverUrl: "ssh://first:22" },
+      { id: "second", serverUrl: "ssh://second:22" },
+    ];
+    expect(
+      await resolvePushTargetProfile(target, {
+        profiles,
+        activeProfileId: "first",
+        hasThread,
+        registrations: {
+          first: { subscriptionId: "duplicate" },
+          second: { subscriptionId: "duplicate" },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      await resolvePushTargetProfile(target, {
+        profiles,
+        activeProfileId: "first",
+        hasThread,
+        registrations: { first: { subscriptionId: null } },
+      }),
+    ).toBeNull();
+    expect(hasThread).not.toHaveBeenCalled();
+  });
+  const ssh = { id: "ssh-1", serverUrl: "ssh://my-host:22" };
+  it("routes an inactive SSH profile by its registered subscription without probing", async () => {
+    const hasThread = vi.fn(async () => true);
+    expect(
+      await resolvePushTargetProfile(
+        {
+          threadId: "thr_1",
+          projectId: null,
+          serverUrl: "http://127.0.0.1:38886",
+          subscriptionId: "sub_ssh",
+        },
+        {
+          profiles: [ssh, sawyer],
+          activeProfileId: sawyer.id,
+          hasThread,
+          registrations: { [ssh.id]: { subscriptionId: "sub_ssh" } },
+        },
+      ),
+    ).toEqual(ssh);
+    expect(hasThread).not.toHaveBeenCalled();
+  });
+  it("does not guess a server from ambiguous loopback hints or fetch logical SSH URLs", async () => {
+    const hasThread = vi.fn(async () => true);
+    expect(
+      await resolvePushTargetProfile(
+        {
+          threadId: "thr_1",
+          projectId: null,
+          serverUrl: "http://127.0.0.1:38886",
+        },
+        { profiles: [ssh, sawyer], activeProfileId: ssh.id, hasThread },
+      ),
+    ).toBeNull();
+    expect(hasThread).not.toHaveBeenCalled();
+    expect(
+      await resolvePushTargetProfile(
+        { threadId: "thr_1", projectId: null, serverUrl: null },
+        { profiles: [ssh], activeProfileId: ssh.id, hasThread },
+      ),
+    ).toBeNull();
+    expect(hasThread).not.toHaveBeenCalled();
+  });
+});

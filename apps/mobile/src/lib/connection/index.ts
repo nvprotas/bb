@@ -8,3 +8,4 @@ export {
   deriveConnectionBanner,
   type ConnectionBannerKind,
 } from "./connection-banner";
+export type { SshConnectionState, SshTransport } from "../ssh/transport";

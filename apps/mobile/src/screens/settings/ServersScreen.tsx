@@ -61,7 +61,9 @@ export function ServersScreen() {
       message:
         profile.mode === "connect"
           ? "The app forgets this server and its device credential. The phone stays listed under Machines in the getbb.app dashboard until you revoke it there."
-          : "The app forgets this server. Nothing on the server changes.",
+          : profile.mode === "ssh"
+            ? "The app forgets this server and deletes its private key from this phone. Nothing on the server changes."
+            : "The app forgets this server. Nothing on the server changes.",
       actionLabel: "Remove",
       onConfirm: () => remove(profile),
     });
@@ -171,11 +173,13 @@ export function ServersScreen() {
                   IS_IOS
                     ? profile.mode === "connect"
                       ? "bb connect"
-                      : "Direct"
+                      : profile.mode === "ssh"
+                        ? "SSH"
+                        : "Direct"
                     : undefined
                 }
                 selected={profile.id === activeProfile?.id}
-                accessibilityLabel={`${profile.label}, ${profile.mode === "connect" ? "bb connect" : "Direct"}, ${profile.serverUrl}`}
+                accessibilityLabel={`${profile.label}, ${profile.mode === "connect" ? "bb connect" : profile.mode === "ssh" ? "SSH" : "Direct"}, ${profile.serverUrl}`}
                 trailing={
                   IS_IOS ? (
                     profile.id === activeProfile?.id ? (
@@ -216,7 +220,9 @@ export function ServersScreen() {
           confirmingRemoval
             ? target?.mode === "connect"
               ? "This removes the server and its device credential from this phone. Revoke the phone separately in getbb.app → Machines."
-              : "This removes the server from this phone. Nothing on the server changes."
+              : target?.mode === "ssh"
+                ? "This removes the server and deletes its private key from this phone. Nothing on the server changes."
+                : "This removes the server from this phone. Nothing on the server changes."
             : target?.serverUrl
         }
         actions={

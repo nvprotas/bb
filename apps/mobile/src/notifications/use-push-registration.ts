@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useProfiles } from "@/app-shell";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   describePushStatus,
   isPushRegistrationAllowed,
@@ -28,8 +29,16 @@ const IDLE_STATE: PushProfileSyncState = {
 export function usePushRegistration(profile: {
   id: string;
   serverUrl: string;
-  mode: "direct" | "connect";
+  mode: "direct" | "connect" | "ssh";
 }): PushRegistration {
+  const { connection } = useProfiles();
+  const syncProfile = useMemo(
+    () =>
+      profile.mode === "ssh" && connection?.profile.id === profile.id
+        ? { ...profile, serverUrl: connection.client.serverUrl }
+        : profile,
+    [profile, connection],
+  );
   const controller = getPushRegistrationController();
   const notifications = getPushNotificationsModule();
   const storeSnapshot = usePushStoreSnapshot();
@@ -46,17 +55,24 @@ export function usePushRegistration(profile: {
   const enabled = storeSnapshot.enabledProfileIds.includes(profile.id);
   const registration = storeSnapshot.registrations[profile.id] ?? null;
   const setEnabled = useCallback(
-    (next: boolean) => controller.setEnabled(profile, next),
-    [controller, profile],
+    (next: boolean) =>
+      syncProfile.mode === "ssh" && !isPushRegistrationAllowed(syncProfile)
+        ? Promise.resolve<PushSyncOutcome>({
+            action: "skipped",
+            reason: "ssh-disconnected",
+          })
+        : controller.setEnabled(syncProfile, next),
+    [controller, syncProfile],
   );
   return {
     available:
-      notifications.projectId !== null && isPushRegistrationAllowed(profile),
+      notifications.projectId !== null &&
+      isPushRegistrationAllowed(syncProfile),
     enabled,
     permission: state.permission,
     syncing: state.syncing,
     statusText: describePushStatus({
-      profile,
+      profile: syncProfile,
       projectId: notifications.projectId,
       enabled,
       permission: state.permission,

@@ -16,6 +16,12 @@ External links use the web app's `shellOpenExternal` helper and the native
 bridge to open through the OS URL handler. The `Mobile E2E` GitHub workflow
 drives the shell flows.
 
+## Android SSH access
+
+This checkout includes multiple saved SSH hosts with one active tunnel. See
+[Android SSH setup and verification](SSH.md) for key import, host trust,
+connection lifecycle, and build/device checks.
+
 ## Structure
 
 ```

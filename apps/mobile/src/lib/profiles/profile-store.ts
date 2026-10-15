@@ -185,6 +185,16 @@ export function createProfileStore(deps: CreateProfileStoreDeps): ProfileStore {
           id: generateId(),
           createdAt: now(),
         });
+        if (
+          profile.mode === "ssh" &&
+          state.profiles.some(
+            (existing) =>
+              existing.mode === "ssh" &&
+              existing.localHost === profile.localHost,
+          )
+        ) {
+          throw new Error("An SSH profile already owns this loopback address");
+        }
         const json = serializeProfile(profile);
         await storage.setItem(profileStorageKey(profile.id), json);
         const profiles = [...state.profiles, profile];
@@ -200,10 +210,20 @@ export function createProfileStore(deps: CreateProfileStoreDeps): ProfileStore {
         const existing = state.profiles.find((p) => p.id === id);
         if (!existing) throw new Error(`Unknown server profile: ${id}`);
         if (
-          existing.mode === "direct" &&
+          existing.mode !== "connect" &&
           (patch.handle !== undefined || patch.credential !== undefined)
         ) {
-          throw new Error("Direct profiles have no connect handle/credential");
+          throw new Error(
+            existing.mode === "direct"
+              ? "Direct profiles have no connect handle/credential"
+              : "SSH profiles have no connect handle/credential",
+          );
+        }
+        if (existing.mode !== "ssh" && patch.hostKey !== undefined) {
+          throw new Error("Only SSH profiles have a host key");
+        }
+        if (existing.mode === "ssh" && patch.serverUrl !== undefined) {
+          throw new Error("SSH transport URLs are not editable");
         }
         const merged = { ...existing, ...withoutUndefined(patch) };
         const profile = serverProfileSchema.parse(merged);

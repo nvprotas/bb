@@ -5,12 +5,14 @@ import {
 } from "@/lib/links/incoming-link";
 
 export interface PushNotificationTarget {
+  subscriptionId?: string;
   threadId: string;
   projectId: string | null;
   serverUrl: string | null;
 }
 
 const pushDataSchema = z.object({
+  subscriptionId: z.string().min(1).optional(),
   threadId: z.string().min(1),
   projectId: z.string().min(1).nullish(),
   serverUrl: z.string().min(1).nullish(),
@@ -35,6 +37,9 @@ export function parsePushNotificationData(
   const serverUrl = parsed.data.serverUrl ?? null;
   const fallbackUrl = parsed.data.url ?? null;
   return {
+    ...(parsed.data.subscriptionId
+      ? { subscriptionId: parsed.data.subscriptionId }
+      : {}),
     threadId: parsed.data.threadId,
     projectId: parsed.data.projectId ?? null,
     serverUrl: serverUrl
@@ -48,6 +53,7 @@ export function parsePushNotificationData(
 export interface ResolvePushTargetProfileDeps {
   profiles: readonly LinkProfileLike[];
   activeProfileId: string | null;
+  registrations?: Readonly<Record<string, { subscriptionId: string | null }>>;
   hasThread(serverUrl: string, threadId: string): Promise<boolean>;
 }
 
@@ -55,11 +61,24 @@ export async function resolvePushTargetProfile(
   target: PushNotificationTarget,
   deps: ResolvePushTargetProfileDeps,
 ): Promise<LinkProfileLike | null> {
-  const { profiles } = deps;
+  if (target.subscriptionId) {
+    const matches = deps.profiles.filter(
+      (profile) =>
+        deps.registrations?.[profile.id]?.subscriptionId ===
+        target.subscriptionId,
+    );
+    return matches.length === 1 ? matches[0]! : null;
+  }
+  const profiles = deps.profiles.filter(
+    (profile) => !profile.serverUrl.startsWith("ssh://"),
+  );
+  const hasSshProfiles = profiles.length !== deps.profiles.length;
   if (profiles.length === 0) return null;
   if (target.serverUrl) {
     try {
       const hint = new URL(target.serverUrl);
+      if (hasSshProfiles && /^(localhost|127\.|\[::1\])/.test(hint.hostname))
+        return null;
       const match = matchProfileForWebLink(
         profiles,
         hint.origin,

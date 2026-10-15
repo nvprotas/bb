@@ -1,7 +1,7 @@
 import * as Notifications from "expo-notifications";
 import { getThreadRoutePath } from "@bb/client-core";
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import {
   useAppRevealed,
@@ -14,8 +14,8 @@ import {
   isPushRegistrationAllowed,
   shouldOfferPushPrompt,
   type PushNotificationTarget,
+  type PushSyncProfile,
 } from "@/data/notifications";
-import type { ServerProfile } from "@/lib/profiles";
 import { ActionSheet, toast, useSheet } from "@/ui";
 import { webViewShellHref } from "@/screens/shell/hrefs";
 import { AppBadgeSync } from "./AppBadgeSync";
@@ -27,6 +27,21 @@ import { usePushStoreSnapshot } from "./use-push-store";
 
 export function PushNotificationsHost() {
   const { status, profiles, activeProfile, connection } = useProfiles();
+  const syncProfile = useMemo(
+    () =>
+      activeProfile?.mode === "ssh" &&
+      connection?.profile.id === activeProfile.id
+        ? { ...activeProfile, serverUrl: connection.client.serverUrl }
+        : activeProfile,
+    [activeProfile, connection],
+  );
+  const syncProfiles = profiles.map((profile) =>
+    syncProfile && profile.id === syncProfile.id ? syncProfile : profile,
+  );
+  const syncProfilesRef = useRef(syncProfiles);
+  useEffect(() => {
+    syncProfilesRef.current = syncProfiles;
+  }, [syncProfiles]);
   const realtimeState = useRealtimeConnectionState();
   const connected = connection !== null && realtimeState === "connected";
   const controller = getPushRegistrationController();
@@ -61,11 +76,13 @@ export function PushNotificationsHost() {
       const profile = await resolvePushTargetProfile(target, {
         profiles: profilesRef.current,
         activeProfileId: activeProfileIdRef.current,
+        registrations: getPushStore().getSnapshot().registrations,
         hasThread: hasThreadOnServer,
       });
       if (!profile) {
         toast.error("Could not open the thread", {
-          description: "None of your saved servers has it.",
+          description:
+            "The notification could not be matched to a saved server. Open the server and select the thread.",
         });
         return;
       }
@@ -103,25 +120,25 @@ export function PushNotificationsHost() {
   }, [openTarget]);
 
   useEffect(() => {
-    if (!activeProfile || !connected) return;
-    void controller.sync(activeProfile);
-  }, [controller, activeProfile, connected, activeEnabled]);
+    if (!syncProfile || !connected) return;
+    void controller.sync(syncProfile);
+  }, [controller, syncProfile, connected, activeEnabled]);
 
   useEffect(() => {
     const onChange = (state: AppStateStatus) => {
       if (state !== "active") return;
       void controller.refreshPermission().then(() => {
-        if (activeProfile) void controller.sync(activeProfile);
+        if (syncProfile) void controller.sync(syncProfile);
       });
     };
     const subscription = AppState.addEventListener("change", onChange);
     return () => subscription.remove();
-  }, [controller, activeProfile]);
+  }, [controller, syncProfile]);
 
   useEffect(
     () =>
       notifications.addTokenListener((deviceToken) => {
-        void controller.handleTokenRolled(profilesRef.current, deviceToken);
+        void controller.handleTokenRolled(syncProfilesRef.current, deviceToken);
       }),
     [controller, notifications],
   );
@@ -139,11 +156,11 @@ export function PushNotificationsHost() {
     <>
       {connection ? <AppBadgeSync /> : null}
       <FirstRunPrompt
-        profile={activeProfile}
+        profile={syncProfile}
         connected={connected}
         available={
           notifications.projectId !== null &&
-          (activeProfile === null || isPushRegistrationAllowed(activeProfile))
+          (activeProfile === null || isPushRegistrationAllowed(syncProfile!))
         }
         prompted={storeSnapshot.prompted}
         enabled={activeEnabled}
@@ -159,7 +176,7 @@ function FirstRunPrompt({
   prompted,
   enabled,
 }: {
-  profile: ServerProfile | null;
+  profile: PushSyncProfile | null;
   connected: boolean;
   available: boolean;
   prompted: boolean;

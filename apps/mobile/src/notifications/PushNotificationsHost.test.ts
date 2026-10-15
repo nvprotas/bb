@@ -93,7 +93,10 @@ vi.mock("./push-controller", () => ({
   }),
 }));
 vi.mock("./push-storage", () => ({
-  getPushStore: () => ({ hasPrompted: vi.fn(() => true) }),
+  getPushStore: () => ({
+    hasPrompted: vi.fn(() => true),
+    getSnapshot: () => ({ registrations: {} }),
+  }),
 }));
 vi.mock("./use-push-store", () => ({
   usePushStoreSnapshot: () => ({

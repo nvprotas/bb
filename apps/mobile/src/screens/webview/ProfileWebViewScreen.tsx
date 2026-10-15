@@ -44,6 +44,9 @@ import { firstParam, settingsSectionHref } from "@/screens/shell/hrefs";
 import { useTheme } from "@/theme";
 import { Button, EmptyStatePanel, Spinner, Text } from "@/ui";
 import { Linking } from "react-native";
+import { SshConnectionPanel } from "./SshConnectionPanel";
+import { getActiveProfileConnector } from "@/app-shell/connector";
+import { getPreferencesStorage } from "@/lib/native";
 import { useShellBridge } from "./useShellBridge";
 import {
   SHELL_NATIVE_DOWNLOADS_SUPPORTED,
@@ -61,8 +64,14 @@ export function ProfileWebViewScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ profileId?: string; path?: string }>();
-  const { status, profiles, activeProfile, connection, setActiveProfile } =
-    useProfiles();
+  const {
+    status,
+    profiles,
+    activeProfile,
+    connection,
+    sshState,
+    setActiveProfile,
+  } = useProfiles();
 
   const requestedProfileId = firstParam(params.profileId);
   const requestedPath = firstParam(params.path);
@@ -75,6 +84,12 @@ export function ProfileWebViewScreen() {
   }, [activeProfile?.id, profiles, requestedProfileId, setActiveProfile]);
 
   const profile = activeProfile;
+  const effectiveServerUrl =
+    profile?.mode === "ssh"
+      ? connection?.profile.id === profile.id
+        ? connection.client.serverUrl
+        : null
+      : (profile?.serverUrl ?? null);
   const session = connection?.session ?? IDLE_SESSION;
   const webViewRef = useRef<WebView>(null);
   const canGoBack = useRef(false);
@@ -88,7 +103,7 @@ export function ProfileWebViewScreen() {
   const loadScope =
     profile === null
       ? null
-      : `${profile.id}#${profile.serverUrl}#${requestedPath ?? ""}`;
+      : `${profile.id}#${effectiveServerUrl ?? "pending"}#${requestedPath ?? ""}`;
 
   useEffect(() => {
     canGoBack.current = false;
@@ -110,18 +125,24 @@ export function ProfileWebViewScreen() {
   );
 
   const sourceUrl = useMemo(() => {
-    if (profile === null) return null;
+    if (profile === null || effectiveServerUrl === null) return null;
     const path = resolveShellLoadPath({
       visitedPath:
         visited !== null && visited.scope === loadScope ? visited.path : null,
-      requestedPath,
+      requestedPath:
+        requestedPath ??
+        (profile.mode === "ssh"
+          ? getPreferencesStorage().getString(`bb.ssh.last-path.${profile.id}`)
+          : undefined),
     });
-    return buildShellUrl(profile.serverUrl, path);
-  }, [loadScope, profile, requestedPath, visited]);
+    return buildShellUrl(effectiveServerUrl, path);
+  }, [loadScope, profile, effectiveServerUrl, requestedPath, visited]);
 
   const rememberPath = useCallback(
     (path: string) => {
       if (loadScope === null) return;
+      if (profile?.mode === "ssh")
+        getPreferencesStorage().set(`bb.ssh.last-path.${profile.id}`, path);
       setVisited((previous) =>
         previous !== null &&
         previous.scope === loadScope &&
@@ -130,7 +151,7 @@ export function ProfileWebViewScreen() {
           : { scope: loadScope, path },
       );
     },
-    [loadScope],
+    [loadScope, profile],
   );
 
   const openDeviceSettings = useCallback(() => {
@@ -216,7 +237,7 @@ export function ProfileWebViewScreen() {
         ? { androidVersionCode: ANDROID_VERSION_CODE }
         : {}),
       platform: Platform.OS === "android" ? "android" : "ios",
-      profileMode: profile.mode,
+      profileMode: profile.mode === "ssh" ? "direct" : profile.mode,
       secureContext: sourceUrl.startsWith("https://"),
       safeArea,
       capabilities: [
@@ -234,9 +255,11 @@ export function ProfileWebViewScreen() {
   }, [profile, safeArea, sourceUrl]);
 
   const retry = useCallback(() => {
+    if (profile?.mode === "ssh" && connection === null)
+      getActiveProfileConnector().retrySsh();
     setLoad({ kind: "loading" });
     setReloadKey((value) => value + 1);
-  }, []);
+  }, [profile, connection]);
 
   const screen = resolveShellScreenState({
     storeReady: status === "ready",
@@ -251,6 +274,18 @@ export function ProfileWebViewScreen() {
   useEffect(() => {
     if (showsFailure) revealApp();
   }, [showsFailure]);
+
+  if (profile?.mode === "ssh" && effectiveServerUrl === null) {
+    return (
+      <SshConnectionPanel
+        key={profile.id}
+        label={profile.label}
+        hostname={profile.hostname}
+        port={profile.port}
+        state={sshState}
+      />
+    );
+  }
 
   if (screen.kind === "no-profile") {
     return <Redirect href="/settings/servers/add" />;
@@ -315,7 +350,8 @@ export function ProfileWebViewScreen() {
     profile === null ||
     loadScope === null ||
     sourceUrl === null ||
-    handshake === null
+    handshake === null ||
+    effectiveServerUrl === null
   ) {
     return null;
   }
@@ -353,11 +389,11 @@ export function ProfileWebViewScreen() {
         onShouldStartLoadWithRequest={(request) => {
           if (
             request.isTopFrame === false &&
-            allowsSubframeLoad(request.url, profile.serverUrl)
+            allowsSubframeLoad(request.url, effectiveServerUrl)
           ) {
             return true;
           }
-          if (isShellNavigation(request.url, profile.serverUrl)) return true;
+          if (isShellNavigation(request.url, effectiveServerUrl)) return true;
           if (isExternallyOpenable(request.url)) {
             void Linking.openURL(request.url).catch(() => undefined);
           }
@@ -371,7 +407,7 @@ export function ProfileWebViewScreen() {
             ? undefined
             : (event) => {
                 const { targetUrl } = event.nativeEvent;
-                switch (resolveOpenWindowAction(targetUrl, profile.serverUrl)) {
+                switch (resolveOpenWindowAction(targetUrl, effectiveServerUrl)) {
                   case "save":
                     webViewRef.current?.injectJavaScript(
                       `var link = document.createElement("a");link.href = ${JSON.stringify(targetUrl)};link.download = "";document.body.append(link);link.click();link.remove();true;`,
@@ -392,7 +428,7 @@ export function ProfileWebViewScreen() {
         }
         onNavigationStateChange={(state) => {
           canGoBack.current = state.canGoBack;
-          const path = shellPathFromUrl(state.url, profile.serverUrl);
+          const path = shellPathFromUrl(state.url, effectiveServerUrl);
           if (path !== null) rememberPath(path);
         }}
         onLoadEnd={() =>

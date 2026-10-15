@@ -540,6 +540,7 @@ describe("push sender", () => {
         kind: "turn-finished",
         projectId: "project-1",
         serverUrl: "https://bb.example.test",
+        subscriptionId: "subscription-1",
         threadId: thread.id,
       });
     } finally {

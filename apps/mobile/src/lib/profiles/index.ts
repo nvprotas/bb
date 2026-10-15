@@ -2,6 +2,7 @@ export {
   PROFILE_LABEL_MAX_LENGTH,
   type NewServerProfile,
   type ServerProfile,
+  type SshServerProfile,
   type ServerProfilePatch,
 } from "./profile";
 export { validateDirectServerUrl } from "./direct-url";
