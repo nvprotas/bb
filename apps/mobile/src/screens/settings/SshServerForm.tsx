@@ -54,6 +54,7 @@ export function SshServerForm({
   const [remotePort, setRemotePort] = useState("38886");
   const [label, setLabel] = useState("");
   const [key, setKey] = useState<{ name: string; text: string } | null>(null);
+  const [pastedKey, setPastedKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -86,6 +87,21 @@ export function SshServerForm({
     } finally {
       setBusy(false);
       onBusyChange(false);
+    }
+  };
+
+  const applyPastedKey = () => {
+    setError(null);
+    try {
+      const text = `${(pastedKey ?? "").replace(/\r\n?/g, "\n").trim()}\n`;
+      if (text.trim() === "") throw new Error("Paste an SSH private key.");
+      if (new TextEncoder().encode(text).length > 65536)
+        throw new Error("Private keys must be 64 KiB or smaller.");
+      isSshPrivateKeyEncrypted(text);
+      setKey({ name: "pasted key", text });
+      setPastedKey(null);
+    } catch (cause) {
+      setError(describeError(cause));
     }
   };
 
@@ -211,7 +227,7 @@ export function SshServerForm({
           />
         </View>
       </SettingsSection>
-      <SettingsSection footnote="Your private key is stored securely on this phone. Encrypted keys prompt for their passphrase when connecting.">
+      <SettingsSection footnote="Choose a key file or paste the private key text. It is stored securely on this phone. Encrypted keys prompt for their passphrase when connecting.">
         <Button
           onPress={() => void pickKey()}
           disabled={busy}
@@ -219,6 +235,56 @@ export function SshServerForm({
         >
           {key ? `Private key: ${key.name}` : "Choose private key file"}
         </Button>
+        {pastedKey === null ? (
+          <Button
+            variant="outline"
+            onPress={() => {
+              setError(null);
+              setPastedKey("");
+            }}
+            disabled={busy}
+            testID="ssh-paste-key"
+          >
+            Paste private key text
+          </Button>
+        ) : (
+          <>
+            <View className="px-1">
+              <Input
+                value={pastedKey}
+                onChangeText={setPastedKey}
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                multiline
+                mono
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="off"
+                importantForAutofill="no"
+                spellCheck={false}
+                textAlignVertical="top"
+                grouped
+                editable={!busy}
+                className="h-40 py-2"
+                testID="ssh-paste-key-input"
+              />
+            </View>
+            <Button
+              onPress={applyPastedKey}
+              disabled={busy || pastedKey.trim() === ""}
+              testID="ssh-paste-key-use"
+            >
+              Use pasted key
+            </Button>
+            <Button
+              variant="outline"
+              onPress={() => setPastedKey(null)}
+              disabled={busy}
+              testID="ssh-paste-key-cancel"
+            >
+              Cancel
+            </Button>
+          </>
+        )}
       </SettingsSection>
       <Button
         onPress={() => void save()}

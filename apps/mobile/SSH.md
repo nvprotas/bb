@@ -12,8 +12,11 @@ The default destination is `127.0.0.1:38886` on the SSH server. Keep bb bound
 to loopback. The application does not install or start bb.
 
 Enter the SSH hostname, SSH port, username, destination, and a label. Import an
-OpenSSH/PEM private key through the document picker. The file must be no larger
-than 64 KiB; the copied cache file is deleted after reading. The application
+OpenSSH, PEM, or PuTTY private key through the document picker, or choose
+"Paste private key text" and paste the key from the clipboard. The key must be
+no larger than 64 KiB; the copied cache file is deleted after reading, and the
+pasted text is cleared from the form once the key is accepted. The application
+does not clear the system clipboard. The application
 encrypts the imported key with an Android Keystore key and stores it in its
 internal no-backup directory. Saved profile JSON contains a key reference.
 
