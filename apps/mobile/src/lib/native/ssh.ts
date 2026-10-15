@@ -4,6 +4,7 @@ import type { SshTransport } from "../ssh/transport";
 import { sshLoopbackAddress } from "../profiles/ssh-profile";
 import { expoSecureStorage } from "./expo-secure-storage";
 import { probeServer } from "../profiles/probe";
+import { createTunnelProbeFetch } from "./ssh-probe";
 
 const ADDRESS_KEY = "bb.ssh.address-sequence";
 let allocationChain: Promise<unknown> = Promise.resolve();
@@ -25,6 +26,10 @@ export function importSshKey(privateKey: string): Promise<string> {
 
 export function deleteSshKey(keyRef: string): Promise<void> {
   return requireSsh().deleteKey(keyRef);
+}
+
+export function restoreSshTunnelCookie(tunnelId: string): Promise<void> {
+  return requireSsh().restoreCookie(tunnelId);
 }
 
 export function allocateSshLocalHost(): Promise<string> {
@@ -56,19 +61,10 @@ export function createNativeSshTransport(): SshTransport | undefined {
         const result = await module.open(options);
         tunnelId = result.tunnelId;
         if (abort.signal.aborted) throw new Error("SSH connection cancelled");
-        const probe = await probeServer(result.serverUrl, async (url, init) => {
-          const combined = new AbortController();
-          const cancel = () => combined.abort();
-          abort.signal.addEventListener("abort", cancel, { once: true });
-          init.signal?.addEventListener("abort", cancel, { once: true });
-          if (abort.signal.aborted || init.signal?.aborted) cancel();
-          try {
-            return await fetch(url, { ...init, signal: combined.signal });
-          } finally {
-            abort.signal.removeEventListener("abort", cancel);
-            init.signal?.removeEventListener("abort", cancel);
-          }
-        });
+        const probe = await probeServer(
+          result.serverUrl,
+          createTunnelProbeFetch(result.tunnelSecret, abort.signal, fetch),
+        );
         if (abort.signal.aborted) throw new Error("SSH connection cancelled");
         if (!probe.ok)
           throw new Error(

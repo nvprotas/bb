@@ -32,6 +32,7 @@ const sshServerProfileSchema = profileBaseSchema
     port: z.number().int().min(1).max(65535),
     username: z.string().min(1).max(128),
     keyRef: z.string().min(1).max(128),
+    keyEncrypted: z.boolean().default(true),
     hostKey: z.string().max(1024).nullable(),
     localHost: z
       .string()

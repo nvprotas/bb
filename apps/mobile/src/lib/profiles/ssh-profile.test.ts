@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { serverProfileSchema } from "./profile";
 import { createProfileStore } from "./profile-store";
 import { createMemorySecureStorage } from "./secure-storage";
 import { sshLoopbackAddress, sshServerUrl } from "./ssh-profile";
@@ -19,6 +20,7 @@ describe("saved SSH hosts", () => {
       port: 22,
       username: "dev",
       keyRef: "key-a",
+      keyEncrypted: true,
       hostKey: null,
       localHost: sshLoopbackAddress(1),
       remoteHost: "127.0.0.1",
@@ -32,6 +34,7 @@ describe("saved SSH hosts", () => {
       port: 2222,
       label: "Second",
       keyRef: "key-b",
+      keyEncrypted: false,
       localHost: sshLoopbackAddress(2),
     });
     await store.updateProfile(first.id, {
@@ -74,11 +77,33 @@ describe("saved SSH hosts", () => {
         port: 22,
         username: "user",
         keyRef: "key",
+        keyEncrypted: true,
         hostKey: null,
         localHost: "0.0.0.0",
         remoteHost: "127.0.0.1",
         remotePort: 38886,
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("legacy SSH profiles", () => {
+  it("keeps asking for a passphrase when keyEncrypted was not saved", () => {
+    const parsed = serverProfileSchema.parse({
+      id: "old",
+      mode: "ssh",
+      label: "Old",
+      createdAt: 0,
+      serverUrl: "ssh://server:22",
+      hostname: "server",
+      port: 22,
+      username: "user",
+      keyRef: "key",
+      hostKey: null,
+      localHost: "127.64.0.1",
+      remoteHost: "127.0.0.1",
+      remotePort: 38886,
+    });
+    expect(parsed.mode === "ssh" && parsed.keyEncrypted).toBe(true);
   });
 });

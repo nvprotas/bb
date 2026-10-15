@@ -596,6 +596,7 @@ const sshProfile: SshServerProfile = {
   port: 22,
   username: "user",
   keyRef: "key",
+  keyEncrypted: true,
   hostKey: null,
   localHost: "127.64.0.1",
   remoteHost: "127.0.0.1",
@@ -606,13 +607,18 @@ function sshTransportFixture() {
   let resolveOpen: (result: {
     tunnelId: string;
     serverUrl: string;
+    tunnelSecret: string;
   }) => void = () => {};
   let emitHostKey: (event: SshHostKeyEvent) => void = () => {};
   let attemptId = "";
   const transport: SshTransport = {
     open: vi.fn((options: SshOpenOptions) => {
       attemptId = options.attemptId;
-      return new Promise<{ tunnelId: string; serverUrl: string }>((resolve) => {
+      return new Promise<{
+        tunnelId: string;
+        serverUrl: string;
+        tunnelSecret: string;
+      }>((resolve) => {
         resolveOpen = resolve;
       });
     }),
@@ -629,7 +635,11 @@ function sshTransportFixture() {
   return {
     transport,
     resolve: () =>
-      resolveOpen({ tunnelId: "tunnel", serverUrl: "http://127.64.0.1:38886" }),
+      resolveOpen({
+        tunnelId: "tunnel",
+        serverUrl: "http://127.64.0.1:38886",
+        tunnelSecret: "secret",
+      }),
     hostKey: () =>
       emitHostKey({
         attemptId,

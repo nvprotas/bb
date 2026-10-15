@@ -47,6 +47,7 @@ import { Linking } from "react-native";
 import { SshConnectionPanel } from "./SshConnectionPanel";
 import { getActiveProfileConnector } from "@/app-shell/connector";
 import { getPreferencesStorage } from "@/lib/native";
+import { restoreSshTunnelCookie } from "@/lib/native/ssh";
 import { useShellBridge } from "./useShellBridge";
 import {
   SHELL_NATIVE_DOWNLOADS_SUPPORTED,
@@ -178,8 +179,14 @@ export function ProfileWebViewScreen() {
       subscribeToShellCommands((command) => {
         if (command.kind === "clear-website-data") {
           webViewRef.current?.clearCache(true);
-          void CookieManager.clearAll(false);
-          void CookieManager.clearAll(true);
+          const restoreTunnel = () => {
+            const ssh = getActiveProfileConnector().getSshState();
+            if (ssh?.status === "ready")
+              void restoreSshTunnelCookie(ssh.tunnelId);
+          };
+          void CookieManager.clearAll(false)
+            .then(() => CookieManager.clearAll(true))
+            .finally(restoreTunnel);
           if (connectProfileId !== null) {
             void nativeSessionCache.clear(connectProfileId);
           }
@@ -407,7 +414,9 @@ export function ProfileWebViewScreen() {
             ? undefined
             : (event) => {
                 const { targetUrl } = event.nativeEvent;
-                switch (resolveOpenWindowAction(targetUrl, effectiveServerUrl)) {
+                switch (
+                  resolveOpenWindowAction(targetUrl, effectiveServerUrl)
+                ) {
                   case "save":
                     webViewRef.current?.injectJavaScript(
                       `var link = document.createElement("a");link.href = ${JSON.stringify(targetUrl)};link.download = "";document.body.append(link);link.click();link.remove();true;`,

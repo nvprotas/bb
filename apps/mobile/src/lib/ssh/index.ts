@@ -4,4 +4,5 @@ export type {
   SshOpenOptions,
   SshHostKeyEvent,
   SshConnectionState,
+  SshErrorCode,
 } from "./transport";

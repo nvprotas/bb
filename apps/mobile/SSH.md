@@ -47,9 +47,30 @@ Distinct IP hosts separate host cookies, and distinct origins separate browser
 storage. A stable port keeps the origin unchanged across reconnects. Query
 clients belong to profile IDs. The last visited path is saved per SSH profile;
 existing web-app draft persistence continues using that profile's origin.
-This is a transport/data separation design, not OS-level isolation from other
-Android applications that can connect to loopback listeners. Real WebView
-cookie/storage isolation still requires device verification.
+Cookie and storage separation is by IP host and origin; real WebView
+isolation still requires device verification.
+
+## Tunnel secret
+
+Other Android apps can connect to loopback, and the bb server trusts loopback
+requests. The native listener therefore never forwards raw connections. Each
+opened tunnel generates a 32-byte `SecureRandom` secret (URL-safe base64). For
+every accepted TCP connection the listener reads the first HTTP request head
+(at most 32 KiB, 5-second deadline) and forwards the connection only if it
+carries the secret in a `bb_ssh_tunnel` cookie or an `X-BB-Tunnel-Secret`
+header (constant-time comparison). Other connections are closed without
+reaching the SSH channel. Only the active tunnel's secret is accepted; it is
+discarded on close.
+
+The native module stores the cookie (`HttpOnly`, path `/`) for the tunnel host
+in Android `CookieManager` before the tunnel is reported open and removes it
+on close. React Native `fetch`, the native realtime WebSocket and the WebView
+all read that cookie jar, so the SDK client, realtime socket, page requests and
+page WebSockets carry it automatically. The readiness probe sends the header
+explicitly. Clearing website data restores the cookie. The secret is not
+stripped from forwarded requests. Only the first request of a connection is
+checked; later requests on an authenticated keep-alive connection are not.
+Remaining exposure: a process that can read this app's memory or cookie store.
 
 Switching hosts cancels pending work, disposes the old SDK/realtime client, and
 closes the old listener/session. Late successful results are closed. The app
@@ -58,6 +79,12 @@ foreground. Network failures after an established connection receive at most
 three retries with 1, 2, and 4 second delays. Authentication and host-key errors
 require user action. Agents continue on the server while the phone is
 disconnected.
+
+Dead links are detected with SSH keepalive requests every 15 seconds; three
+unanswered requests disconnect the session (about 45-60 seconds). The native
+module also closes the tunnel when the Android default network is lost or
+changes (for example Wi-Fi to LTE), so the controller's reconnect starts
+immediately. A transport disconnect notification closes the tunnel without polling.
 
 Native SSH connect/key-exchange, authentication and forwarding stages have
 15-second deadlines. Host-key confirmation allows 60 seconds, separately from

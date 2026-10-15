@@ -33,7 +33,8 @@ declare class BbSshModule extends NativeModule<SshEvents> {
   deleteKey(keyRef: string): Promise<void>;
   open(
     options: SshOpenOptions,
-  ): Promise<{ tunnelId: string; serverUrl: string }>;
+  ): Promise<{ tunnelId: string; serverUrl: string; tunnelSecret: string }>;
+  restoreCookie(tunnelId: string): Promise<void>;
   confirmHostKey(attemptId: string, accept: boolean): Promise<void>;
   cancel(attemptId: string): Promise<void>;
   close(tunnelId: string): Promise<void>;

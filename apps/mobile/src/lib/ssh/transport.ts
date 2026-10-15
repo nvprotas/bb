@@ -1,3 +1,21 @@
+export const SSH_ERROR_CODES = [
+  "SSH_OPEN_FAILED",
+  "SSH_TIMEOUT",
+  "SSH_AUTH_FAILED",
+  "SSH_HOST_KEY_CHANGED",
+  "SSH_HOST_KEY_REJECTED",
+] as const;
+
+export type SshErrorCode = (typeof SSH_ERROR_CODES)[number];
+
+export function parseSshErrorCode(value: unknown): SshErrorCode {
+  return SSH_ERROR_CODES.find((code) => code === value) ?? "SSH_OPEN_FAILED";
+}
+
+export function isRetryableSshErrorCode(code: SshErrorCode): boolean {
+  return code === "SSH_OPEN_FAILED" || code === "SSH_TIMEOUT";
+}
+
 export interface SshOpenOptions {
   attemptId: string;
   hostname: string;
@@ -21,7 +39,7 @@ export interface SshHostKeyEvent {
 export interface SshTransport {
   open(
     options: SshOpenOptions,
-  ): Promise<{ tunnelId: string; serverUrl: string }>;
+  ): Promise<{ tunnelId: string; serverUrl: string; tunnelSecret: string }>;
   confirmHostKey(options: {
     attemptId: string;
     accept: boolean;
@@ -55,6 +73,11 @@ export type SshConnectionState =
       changed: boolean;
     }
   | { status: "passphrase-needed"; detail: string }
-  | { status: "ready"; tunnelId: string; serverUrl: string }
+  | {
+      status: "ready";
+      tunnelId: string;
+      serverUrl: string;
+      tunnelSecret: string;
+    }
   | { status: "error"; detail: string }
   | { status: "suspended" };

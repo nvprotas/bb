@@ -67,7 +67,8 @@ export async function resolvePushTargetProfile(
         deps.registrations?.[profile.id]?.subscriptionId ===
         target.subscriptionId,
     );
-    return matches.length === 1 ? matches[0]! : null;
+    if (matches.length === 1) return matches[0]!;
+    if (matches.length > 1) return null;
   }
   const profiles = deps.profiles.filter(
     (profile) => !profile.serverUrl.startsWith("ssh://"),

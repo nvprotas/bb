@@ -70,11 +70,15 @@ export function SshConnectionPanel({
             secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
-            placeholder="Key passphrase (optional)"
+            placeholder="Key passphrase"
             onSubmitEditing={submitPassphrase}
             testID="ssh-passphrase"
           />
-          <Button onPress={submitPassphrase} testID="ssh-connect">
+          <Button
+            onPress={submitPassphrase}
+            disabled={!passphrase}
+            testID="ssh-connect"
+          >
             Connect
           </Button>
         </>

@@ -11,6 +11,7 @@ import {
   importSshKey,
 } from "@/lib/native/ssh";
 import { PROFILE_LABEL_MAX_LENGTH } from "@/lib/profiles";
+import { isSshPrivateKeyEncrypted } from "@/lib/ssh/key-encryption";
 import { sshServerUrl } from "@/lib/profiles/ssh-profile";
 import { Button, Input, Text, toast } from "@/ui";
 import { rawPathHref } from "../shell/hrefs";
@@ -102,6 +103,7 @@ export function SshServerForm({
       const sshPort = parsePort(port, "SSH port");
       const bbPort = parsePort(remotePort, "bb port");
       if (!key) throw new Error("Select an SSH private key.");
+      const keyEncrypted = isSshPrivateKeyEncrypted(key.text);
       const localHost = await allocateSshLocalHost();
       orphanKey = await importSshKey(key.text);
       const profile = await addProfile({
@@ -110,6 +112,7 @@ export function SshServerForm({
         port: sshPort,
         username: user,
         keyRef: orphanKey,
+        keyEncrypted,
         hostKey: null,
         localHost,
         remoteHost: targetHost,

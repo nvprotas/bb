@@ -160,6 +160,94 @@ describe("SSH push targets", () => {
     expect(hasThread).not.toHaveBeenCalled();
   });
   const ssh = { id: "ssh-1", serverUrl: "ssh://my-host:22" };
+  it("prefers the subscription match over the server hint", async () => {
+    const hasThread = vi.fn(async () => true);
+    expect(
+      await resolvePushTargetProfile(
+        {
+          threadId: "thr_1",
+          projectId: null,
+          serverUrl: sawyer.serverUrl,
+          subscriptionId: "sub_lan",
+        },
+        {
+          profiles: [sawyer, lan],
+          activeProfileId: sawyer.id,
+          hasThread,
+          registrations: { [lan.id]: { subscriptionId: "sub_lan" } },
+        },
+      ),
+    ).toBe(lan);
+    expect(hasThread).not.toHaveBeenCalled();
+  });
+  it("falls back to hint and probing for direct profiles when no subscription matches", async () => {
+    const hasThread = vi.fn(async () => false);
+    const base = {
+      threadId: "thr_1",
+      projectId: null,
+      subscriptionId: "sub_unknown",
+    };
+    const deps = {
+      profiles: [sawyer, lan],
+      activeProfileId: sawyer.id,
+      hasThread,
+      registrations: { [sawyer.id]: { subscriptionId: "other" } },
+    };
+    expect(
+      await resolvePushTargetProfile(
+        { ...base, serverUrl: lan.serverUrl },
+        deps,
+      ),
+    ).toBe(lan);
+    expect(hasThread).not.toHaveBeenCalled();
+    const probing = vi.fn(
+      async (serverUrl: string) => serverUrl === lan.serverUrl,
+    );
+    expect(
+      await resolvePushTargetProfile(
+        { ...base, serverUrl: null },
+        { ...deps, hasThread: probing },
+      ),
+    ).toBe(lan);
+  });
+  it("never picks an SSH profile when no subscription matches", async () => {
+    const hasThread = vi.fn(async () => true);
+    const target = {
+      threadId: "thr_1",
+      projectId: null,
+      serverUrl: null,
+      subscriptionId: "sub_unknown",
+    };
+    expect(
+      await resolvePushTargetProfile(target, {
+        profiles: [ssh],
+        activeProfileId: ssh.id,
+        hasThread,
+        registrations: {},
+      }),
+    ).toBeNull();
+    expect(
+      await resolvePushTargetProfile(
+        { ...target, serverUrl: "http://127.0.0.1:38886" },
+        {
+          profiles: [ssh, sawyer],
+          activeProfileId: ssh.id,
+          hasThread,
+          registrations: {},
+        },
+      ),
+    ).toBeNull();
+    expect(
+      await resolvePushTargetProfile(target, {
+        profiles: [ssh, sawyer],
+        activeProfileId: ssh.id,
+        hasThread,
+        registrations: {},
+      }),
+    ).toBe(sawyer);
+    expect(hasThread).toHaveBeenCalledTimes(1);
+    expect(hasThread).toHaveBeenCalledWith(sawyer.serverUrl, "thr_1");
+  });
   it("routes an inactive SSH profile by its registered subscription without probing", async () => {
     const hasThread = vi.fn(async () => true);
     expect(

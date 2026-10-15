@@ -1,6 +1,11 @@
 import type { SshServerProfile } from "../profiles/profile";
 import type { AppStateLike } from "../realtime/app-state";
-import type { SshConnectionState, SshTransport } from "./transport";
+import {
+  isRetryableSshErrorCode,
+  parseSshErrorCode,
+  type SshConnectionState,
+  type SshTransport,
+} from "./transport";
 
 let attemptSequence = 0;
 
@@ -62,21 +67,25 @@ export function createSshConnectionController(deps: {
       publish({ status: "suspended" });
       return;
     }
-    if (passphrase === null) {
+    if (profile.keyEncrypted && passphrase === null) {
       publish({
         status: "passphrase-needed",
-        detail:
-          "Enter the private key passphrase, or leave it blank for an unencrypted key",
+        detail: "Enter the private key passphrase",
       });
       return;
     }
+    const keyPassphrase = profile.keyEncrypted ? passphrase : null;
     const current = { trustSaved: Promise.resolve() };
     attempt = current;
     const currentAttempt = `ssh-${++attemptSequence}`;
     attemptId = currentAttempt;
     publish({ status: "connecting" });
     void deps.transport
-      .open({ ...profile, attemptId: currentAttempt, passphrase })
+      .open({
+        ...profile,
+        attemptId: currentAttempt,
+        passphrase: keyPassphrase,
+      })
       .then(async (result) => {
         try {
           await current.trustSaved;
@@ -112,30 +121,13 @@ export function createSshConnectionController(deps: {
         if (attemptId !== currentAttempt) return;
         const detail =
           error instanceof Error ? error.message : "SSH connection failed";
-        if (
-          error instanceof Error &&
-          "code" in error &&
-          error.code === "SSH_KEY_PASSPHRASE_REQUIRED"
-        ) {
-          stop();
-          publish({ status: "passphrase-needed", detail });
-          return;
-        }
-        if (state?.status === "passphrase-needed" || state?.status === "error")
-          return;
-        fail(detail);
-        const code =
-          error instanceof Error &&
-          "code" in error &&
-          typeof error.code === "string"
+        const code = parseSshErrorCode(
+          typeof error === "object" && error !== null && "code" in error
             ? error.code
-            : "";
-        if (
-          !/auth|host.?key|passphrase|private.?key|invalid.?key|key.?import|cancel|reject/i.test(
-            `${code} ${detail}`,
-          )
-        )
-          scheduleReconnect();
+            : undefined,
+        );
+        fail(detail);
+        if (isRetryableSshErrorCode(code)) scheduleReconnect();
       });
   };
   const unsubscribeState = deps.transport.onState((event) => {
@@ -149,12 +141,6 @@ export function createSshConnectionController(deps: {
     } else if (event.state === "error") {
       const detail = event.detail ?? "SSH connection failed";
       fail(detail);
-      if (
-        !/auth|host.?key|passphrase|private.?key|invalid.?key|key.?import|cancel|reject/i.test(
-          detail,
-        )
-      )
-        scheduleReconnect();
     }
   });
   const unsubscribeHostKey = deps.transport.onHostKey((event) => {
@@ -179,10 +165,9 @@ export function createSshConnectionController(deps: {
     if (event.attemptId !== attemptId) return;
     const established = state?.status === "ready";
     const detail = event.detail ?? "SSH connection closed";
-    const networkFailure =
-      !/auth|host.?key|passphrase|private.?key|invalid.?key|key.?import|cancel|reject/i.test(
-        `${event.code ?? ""} ${detail}`,
-      );
+    const networkFailure = isRetryableSshErrorCode(
+      parseSshErrorCode(event.code),
+    );
     fail(detail);
     if (networkFailure && (established || recovering)) {
       if (established) recovering = true;

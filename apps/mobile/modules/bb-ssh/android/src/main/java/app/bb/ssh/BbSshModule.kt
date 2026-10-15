@@ -1,17 +1,27 @@
 package app.bb.ssh
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.os.Handler
+import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.webkit.CookieManager
+import android.webkit.ValueCallback
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.records.Field
 import expo.modules.kotlin.records.Record
+import net.schmizz.keepalive.KeepAliveProvider
+import net.schmizz.keepalive.KeepAliveRunner
+import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.Buffer
 import net.schmizz.sshj.common.SecurityUtils
-import net.schmizz.sshj.connection.channel.direct.Parameters
+import net.schmizz.sshj.transport.DisconnectListener
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.userauth.password.PasswordUtils
 import java.io.File
@@ -21,6 +31,7 @@ import java.net.ServerSocket
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PublicKey
+import java.security.SecureRandom
 import java.security.Provider
 import java.security.Security
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -29,6 +40,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -61,9 +73,10 @@ class BbSshModule : Module() {
     }
   }
 
-  private class Attempt(val id: String, val promise: Promise, val passphrase: CharArray?) {
+  private class Attempt(val id: String, val promise: Promise, val passphrase: CharArray?, val localHost: String) {
     val tunnelId = UUID.randomUUID().toString()
-    val client = SSHClient()
+    val secret = newSecret()
+    val client = SSHClient(DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE })
     val cancelled = AtomicBoolean(false)
     val closed = AtomicBoolean(false)
     val settled = AtomicBoolean(false)
@@ -73,6 +86,9 @@ class BbSshModule : Module() {
     @Volatile var hostKeyChanged = false
     @Volatile var hostKeyRejected = false
     @Volatile var deadline: ScheduledFuture<*>? = null
+    @Volatile var cookieSet = false
+    @Volatile var boundNetwork: Network? = null
+    @Volatile var networkCallback: ConnectivityManager.NetworkCallback? = null
   }
 
   private val lock = Any()
@@ -109,7 +125,7 @@ class BbSshModule : Module() {
         val attempt = synchronized(lock) {
           check(!destroyed) { "SSH module is closed" }
           current?.let { stop(it, "Connection replaced") }
-          Attempt(options.attemptId, promise, options.passphrase?.toCharArray()).also { current = it }
+          Attempt(options.attemptId, promise, options.passphrase?.toCharArray(), options.localHost).also { current = it }
         }
         options.passphrase = null
         deadline(attempt, "SSH DNS resolution or connection timed out")
@@ -121,6 +137,10 @@ class BbSshModule : Module() {
     AsyncFunction("confirmHostKey") { attemptId: String, accept: Boolean ->
       synchronized(lock) { current?.takeIf { it.id == attemptId } }?.trust?.complete(accept)
       Unit
+    }
+    AsyncFunction("restoreCookie") { tunnelId: String ->
+      val attempt = synchronized(lock) { current?.takeIf { it.tunnelId == tunnelId && !it.cancelled.get() } }
+      if (attempt != null) writeCookie(attempt.localHost, "$COOKIE_NAME=${attempt.secret}; Path=/; HttpOnly")
     }
     AsyncFunction("cancel") { attemptId: String ->
       synchronized(lock) {
@@ -188,7 +208,9 @@ class BbSshModule : Module() {
       attempt.client.connectTimeout = 15000
       attempt.client.timeout = 90000
       attempt.client.transport.timeoutMs = 90000
-      attempt.client.connection.keepAlive.keepAliveInterval = 15
+      val keepAlive = attempt.client.connection.keepAlive
+      keepAlive.keepAliveInterval = KEEP_ALIVE_INTERVAL_SECONDS
+      (keepAlive as? KeepAliveRunner)?.maxAliveCount = KEEP_ALIVE_MAX_MISSED
       attempt.client.addHostKeyVerifier(object : HostKeyVerifier {
         override fun findExistingAlgorithms(hostname: String, port: Int): List<String> =
           options.hostKey?.let { listOf(it.substringBefore(' ')) } ?: emptyList()
@@ -246,22 +268,27 @@ class BbSshModule : Module() {
       val socket = ServerSocket()
       attempt.socket = socket
       socket.bind(InetSocketAddress(InetAddress.getByName(options.localHost), 38886))
-      val forwarder = attempt.client.newLocalPortForwarder(Parameters(options.localHost, socket.localPort, options.remoteHost, options.remotePort), socket)
+      val forwarder = AuthenticatedForwarder(attempt.client, socket, options.remoteHost, options.remotePort, attempt.secret, workers)
+      checkActive(attempt)
+      attempt.cookieSet = true
+      writeCookie(options.localHost, "$COOKIE_NAME=${attempt.secret}; Path=/; HttpOnly")
       synchronized(lock) {
         checkActive(attempt)
         synchronized(attempt) { attempt.deadline?.cancel(false) }
         attempt.client.socket.soTimeout = 0
+        attempt.client.transport.setDisconnectListener(DisconnectListener { _, _ -> stop(attempt, "SSH connection closed") })
+        watchNetwork(attempt)
         state(attempt, "connected")
-        if (attempt.settled.compareAndSet(false, true)) promise.resolve(mapOf("tunnelId" to attempt.tunnelId, "serverUrl" to "http://${options.localHost}:${socket.localPort}"))
+        if (attempt.settled.compareAndSet(false, true)) {
+          promise.resolve(mapOf(
+            "tunnelId" to attempt.tunnelId,
+            "serverUrl" to "http://${options.localHost}:${socket.localPort}",
+            "tunnelSecret" to attempt.secret,
+          ))
+        }
       }
       workers.execute {
         try { forwarder.listen() } catch (_: Exception) { } finally { stop(attempt, "SSH connection closed") }
-      }
-      workers.execute {
-        while (!attempt.cancelled.get() && attempt.client.transport.isRunning) {
-          try { Thread.sleep(1000) } catch (_: InterruptedException) { break }
-        }
-        stop(attempt, "SSH connection closed")
       }
     } catch (error: Exception) {
       val message = when {
@@ -285,6 +312,55 @@ class BbSshModule : Module() {
     }
   }
 
+  private fun connectivity(): ConnectivityManager? =
+    appContext.reactContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+
+  private fun watchNetwork(attempt: Attempt) {
+    val manager = connectivity() ?: return
+    val callback = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(network: Network) {
+        val bound = attempt.boundNetwork
+        if (bound == null) attempt.boundNetwork = network
+        else if (bound != network) stop(attempt, "Network changed")
+      }
+
+      override fun onLost(network: Network) {
+        if (network == attempt.boundNetwork) stop(attempt, "Network lost")
+      }
+    }
+    attempt.networkCallback = callback
+    manager.registerDefaultNetworkCallback(callback)
+  }
+
+  private fun writeCookie(localHost: String, value: String) {
+    val latch = CountDownLatch(1)
+    val stored = AtomicBoolean(false)
+    Handler(Looper.getMainLooper()).post {
+      try {
+        val manager = CookieManager.getInstance()
+        manager.setAcceptCookie(true)
+        manager.setCookie("http://$localHost/", value, ValueCallback<Boolean> { result ->
+          stored.set(result == true)
+          manager.flush()
+          latch.countDown()
+        })
+      } catch (_: Exception) {
+        latch.countDown()
+      }
+    }
+    check(latch.await(5, TimeUnit.SECONDS) && stored.get()) { "Unable to store the tunnel cookie" }
+  }
+
+  private fun removeCookie(localHost: String) {
+    Handler(Looper.getMainLooper()).post {
+      runCatching {
+        val manager = CookieManager.getInstance()
+        manager.setCookie("http://$localHost/", "$COOKIE_NAME=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT", null)
+        manager.flush()
+      }
+    }
+  }
+
   private fun checkActive(attempt: Attempt) {
     check(!attempt.cancelled.get()) { "Connection cancelled" }
   }
@@ -298,6 +374,14 @@ class BbSshModule : Module() {
     attempt.passphrase?.fill('\u0000')
     attempt.trust.complete(false)
     synchronized(attempt) { attempt.deadline?.cancel(false) }
+    attempt.networkCallback?.let { callback ->
+      attempt.networkCallback = null
+      runCatching { connectivity()?.unregisterNetworkCallback(callback) }
+    }
+    if (attempt.cookieSet) {
+      attempt.cookieSet = false
+      removeCookie(attempt.localHost)
+    }
     runCatching { attempt.socket?.close() }
     runCatching { attempt.client.socket?.close() }
     runCatching { cleanup.execute { runCatching { attempt.client.close() } } }
@@ -332,5 +416,18 @@ class BbSshModule : Module() {
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
     cipher.init(Cipher.DECRYPT_MODE, storageKey(), GCMParameterSpec(128, encrypted.copyOfRange(0, 12)))
     return cipher.doFinal(encrypted, 12, encrypted.size - 12)
+  }
+
+  private companion object {
+    const val COOKIE_NAME = AuthenticatedForwarder.COOKIE_NAME
+    const val KEEP_ALIVE_INTERVAL_SECONDS = 15
+    const val KEEP_ALIVE_MAX_MISSED = 3
+    val random = SecureRandom()
+
+    fun newSecret(): String {
+      val bytes = ByteArray(32)
+      random.nextBytes(bytes)
+      return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
   }
 }

@@ -18,6 +18,7 @@ const profile: SshServerProfile = {
   port: 22,
   username: "user",
   keyRef: "key",
+  keyEncrypted: true,
   hostKey: null,
   localHost: "127.64.0.1",
   remoteHost: "127.0.0.1",
@@ -27,7 +28,11 @@ const profile: SshServerProfile = {
 function setup() {
   const pending: Array<{
     attemptId: string;
-    resolve: (result: { tunnelId: string; serverUrl: string }) => void;
+    resolve: (result: {
+      tunnelId: string;
+      serverUrl: string;
+      tunnelSecret: string;
+    }) => void;
     reject: (error: Error) => void;
   }> = [];
   let closed: (event: {
@@ -40,11 +45,13 @@ function setup() {
   const transport: SshTransport = {
     open: vi.fn(
       (options: SshOpenOptions) =>
-        new Promise<{ tunnelId: string; serverUrl: string }>(
-          (resolve, reject) => {
-            pending.push({ attemptId: options.attemptId, resolve, reject });
-          },
-        ),
+        new Promise<{
+          tunnelId: string;
+          serverUrl: string;
+          tunnelSecret: string;
+        }>((resolve, reject) => {
+          pending.push({ attemptId: options.attemptId, resolve, reject });
+        }),
     ),
     cancel: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
@@ -97,6 +104,7 @@ describe("SSH connection lifecycle", () => {
     s.pending[0]!.resolve({
       tunnelId: "stale",
       serverUrl: "http://127.64.0.1:38886",
+      tunnelSecret: "secret",
     });
     await flush();
     expect(s.transport.close).toHaveBeenCalledWith({ tunnelId: "stale" });
@@ -104,6 +112,7 @@ describe("SSH connection lifecycle", () => {
     s.pending[2]!.resolve({
       tunnelId: "latest",
       serverUrl: "http://127.64.0.1:38886",
+      tunnelSecret: "secret",
     });
     await flush();
     expect(s.controller.getState()?.status).toBe("ready");
@@ -117,6 +126,7 @@ describe("SSH connection lifecycle", () => {
     s.pending[0]!.resolve({
       tunnelId: "live",
       serverUrl: "http://127.64.0.1:38886",
+      tunnelSecret: "secret",
     });
     await flush();
     s.appChange("background");
@@ -157,6 +167,7 @@ it("bounds dropped-tunnel reconnects and cancels scheduled retries on deactivati
       s.pending[index]!.resolve({
         tunnelId: `tunnel-${index}`,
         serverUrl: "http://127.64.0.1:38886",
+        tunnelSecret: "secret",
       });
       await flush();
       s.closed(s.pending[index]!.attemptId);
@@ -169,6 +180,7 @@ it("bounds dropped-tunnel reconnects and cancels scheduled retries on deactivati
     s.pending[4]!.resolve({
       tunnelId: "next",
       serverUrl: "http://127.64.0.1:38886",
+      tunnelSecret: "secret",
     });
     await flush();
     s.closed(s.pending[4]!.attemptId);
@@ -190,6 +202,7 @@ it("retries network failures during recovery and cancels a queued recovery on ba
     s.pending[0]!.resolve({
       tunnelId: "live",
       serverUrl: "http://127.64.0.1:38886",
+      tunnelSecret: "secret",
     });
     await flush();
     s.closed(s.pending[0]!.attemptId);
@@ -218,11 +231,16 @@ it("does not retry authentication failure while recovering a dropped tunnel", as
     s.pending[0]!.resolve({
       tunnelId: "live",
       serverUrl: "http://127.64.0.1:38886",
+      tunnelSecret: "secret",
     });
     await flush();
     s.closed(s.pending[0]!.attemptId);
     await vi.advanceTimersByTimeAsync(1000);
-    s.pending[1]!.reject(new Error("Public key authentication failed"));
+    s.pending[1]!.reject(
+      Object.assign(new Error("Public key authentication failed"), {
+        code: "SSH_AUTH_FAILED",
+      }),
+    );
     await flush();
     await vi.advanceTimersByTimeAsync(10000);
     expect(s.pending).toHaveLength(2);
@@ -241,6 +259,7 @@ it("continues recovery when a native close precedes its rejected open promise", 
     s.pending[0]!.resolve({
       tunnelId: "live",
       serverUrl: "http://127.64.0.1:38886",
+      tunnelSecret: "secret",
     });
     await flush();
     s.closed(s.pending[0]!.attemptId);
@@ -259,4 +278,147 @@ it("continues recovery when a native close precedes its rejected open promise", 
     s.controller.dispose();
     vi.useRealTimers();
   }
+});
+
+function rejectOpen(entry: { reject: (error: Error) => void }, code?: string) {
+  entry.reject(Object.assign(new Error("failure"), code ? { code } : {}));
+}
+
+describe("SSH retry policy", () => {
+  it("backs off 1, 2 and 4 seconds and stops after three retries", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    try {
+      s.controller.activate(profile);
+      s.controller.providePassphrase("");
+      s.pending[0]!.resolve({
+        tunnelId: "live",
+        serverUrl: "http://127.64.0.1:38886",
+        tunnelSecret: "secret",
+      });
+      await flush();
+      s.closed(s.pending[0]!.attemptId);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(s.pending).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(s.pending).toHaveLength(2);
+      rejectOpen(s.pending[1]!, "SSH_OPEN_FAILED");
+      await flush();
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(s.pending).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(s.pending).toHaveLength(3);
+      rejectOpen(s.pending[2]!, "SSH_TIMEOUT");
+      await flush();
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(s.pending).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(s.pending).toHaveLength(4);
+      rejectOpen(s.pending[3]!, "SSH_OPEN_FAILED");
+      await flush();
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(s.pending).toHaveLength(4);
+      expect(s.controller.getState()?.status).toBe("error");
+    } finally {
+      s.controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["SSH_AUTH_FAILED", "SSH_HOST_KEY_CHANGED", "SSH_HOST_KEY_REJECTED"])(
+    "does not reconnect an established tunnel closed with %s",
+    async (code) => {
+      vi.useFakeTimers();
+      const s = setup();
+      try {
+        s.controller.activate(profile);
+        s.controller.providePassphrase("");
+        s.pending[0]!.resolve({
+          tunnelId: "live",
+          serverUrl: "http://127.64.0.1:38886",
+          tunnelSecret: "secret",
+        });
+        await flush();
+        s.closed(s.pending[0]!.attemptId, code);
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(s.pending).toHaveLength(1);
+        expect(s.controller.getState()?.status).toBe("error");
+      } finally {
+        s.controller.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("treats an unknown close code as an open failure", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    try {
+      s.controller.activate(profile);
+      s.controller.providePassphrase("");
+      s.pending[0]!.resolve({
+        tunnelId: "live",
+        serverUrl: "http://127.64.0.1:38886",
+        tunnelSecret: "secret",
+      });
+      await flush();
+      s.closed(s.pending[0]!.attemptId, "SOMETHING_NEW");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(s.pending).toHaveLength(2);
+    } finally {
+      s.controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not schedule a reconnect when the user deactivates mid-attempt", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    try {
+      s.controller.activate(profile);
+      s.controller.providePassphrase("");
+      s.pending[0]!.resolve({
+        tunnelId: "live",
+        serverUrl: "http://127.64.0.1:38886",
+        tunnelSecret: "secret",
+      });
+      await flush();
+      s.closed(s.pending[0]!.attemptId);
+      await vi.advanceTimersByTimeAsync(1000);
+      s.controller.activate(null);
+      rejectOpen(s.pending[1]!, "SSH_OPEN_FAILED");
+      await flush();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(s.pending).toHaveLength(2);
+    } finally {
+      s.controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("unencrypted keys", () => {
+  it("connects without a passphrase prompt and does not prompt after auth failure", async () => {
+    const s = setup();
+    s.controller.activate({ ...profile, keyEncrypted: false });
+    expect(s.controller.getState()?.status).toBe("connecting");
+    expect(s.transport.open).toHaveBeenCalledWith(
+      expect.objectContaining({ passphrase: null }),
+    );
+    rejectOpen(s.pending[0]!, "SSH_AUTH_FAILED");
+    await flush();
+    expect(s.controller.getState()?.status).toBe("error");
+    s.controller.retry();
+    expect(s.controller.getState()?.status).toBe("connecting");
+    expect(s.pending).toHaveLength(2);
+    s.controller.dispose();
+  });
+
+  it("still prompts for encrypted keys", () => {
+    const s = setup();
+    s.controller.activate(profile);
+    expect(s.controller.getState()?.status).toBe("passphrase-needed");
+    expect(s.pending).toHaveLength(0);
+    s.controller.dispose();
+  });
 });
